@@ -1,0 +1,117 @@
+#include <WiFi.h>
+#include <WebServer.h>
+
+const char* ap_ssid = "ESP32-ADC";
+const char* ap_pass = "12345678";
+
+WebServer server(80);
+
+// MUST be ADC1 when Wi-Fi is on
+const int analogPin = 32;
+
+// Graph settings
+const int N = 200;             // points in the graph
+const int sampleDelayMs = 10;  // 10ms => 2 seconds per plot (N*delay)
+
+int latestRaw = 0;
+
+// ---------- SVG plot endpoint ----------
+void handlePlotSvg() {
+  // Collect fresh samples (blocking on purpose, simple + reliable)
+  static uint16_t s[N];
+  for (int i = 0; i < N; i++) {
+    s[i] = analogRead(analogPin);
+    delay(sampleDelayMs);
+  }
+  latestRaw = s[N - 1];
+
+  // SVG canvas size
+  const int W = 900;
+  const int H = 280;
+  const int x0 = 40, y0 = 10;
+  const int w = W - 50, h = H - 30;
+
+  // Build SVG
+  String svg;
+  svg.reserve(18000);
+
+  svg += "<?xml version='1.0' encoding='UTF-8'?>";
+  svg += "<svg xmlns='http://www.w3.org/2000/svg' width='" + String(W) +
+         "' height='" + String(H) + "' viewBox='0 0 " + String(W) + " " + String(H) + "'>";
+  svg += "<rect x='0' y='0' width='100%' height='100%' fill='white'/>";
+
+  // Border
+  svg += "<rect x='" + String(x0) + "' y='" + String(y0) + "' width='" + String(w) +
+         "' height='" + String(h) + "' fill='none' stroke='#999'/>";
+
+  // Grid lines
+  for (int i = 1; i <= 4; i++) {
+    int yy = y0 + (h * i) / 5;
+    svg += "<line x1='" + String(x0) + "' y1='" + String(yy) +
+           "' x2='" + String(x0 + w) + "' y2='" + String(yy) +
+           "' stroke='#ddd'/>";
+  }
+
+  // Polyline points (fixed scale 0..4095)
+  svg += "<polyline fill='none' stroke='black' stroke-width='2' points='";
+  for (int i = 0; i < N; i++) {
+    float xf = x0 + (w * (float)i) / (float)(N - 1);
+    float yf = y0 + h - (h * (float)s[i]) / 4095.0f;
+    svg += String((int)xf) + "," + String((int)yf);
+    if (i < N - 1) svg += " ";
+  }
+  svg += "'/>";
+
+  // Labels
+  svg += "<text x='5' y='20' font-size='12' font-family='Arial'>4095</text>";
+  svg += "<text x='18' y='" + String(y0 + h) + "' font-size='12' font-family='Arial'>0</text>";
+  svg += "<text x='40' y='" + String(H - 5) + "' font-size='12' font-family='Arial'>Latest: " +
+         String(latestRaw) + "</text>";
+
+  svg += "</svg>";
+
+  // Prevent caching
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "image/svg+xml", svg);
+}
+
+// ---------- Main page ----------
+void handleRoot() {
+  String html =
+    "<!doctype html><html><head>"
+    "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+    "<meta http-equiv='refresh' content='2'>"
+    "<title>ESP32 ADC Graph</title>"
+    "<style>body{font-family:system-ui,Arial;margin:16px;max-width:900px;}</style>"
+    "</head><body>"
+    "<h2>ESP32 Photoresistor Graph (SVG)</h2>"
+    "<p>Latest: " + String(latestRaw) + "</p>"
+    "<img src='/plot.svg' style='width:100%;max-width:900px;border:1px solid #999'/>"
+    "<p><small>Update time per plot ≈ N * delay = " + String(N) + " * " + String(sampleDelayMs) +
+    "ms.</small></p>"
+    "</body></html>";
+
+  server.send(200, "text/html", html);
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(200);
+
+  analogReadResolution(12);
+  analogSetPinAttenuation(analogPin, ADC_11db);
+
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(ap_ssid, ap_pass);
+
+  Serial.print("AP IP: ");
+  Serial.println(WiFi.softAPIP()); // usually 192.168.4.1
+
+  server.on("/", handleRoot);
+  server.on("/plot.svg", handlePlotSvg);
+  server.begin();
+}
+
+void loop() {
+  server.handleClient();
+}
