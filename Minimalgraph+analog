@@ -1,0 +1,64 @@
+#include <WiFi.h>
+#include <WebServer.h>
+
+WebServer server(80);
+
+const char page[] PROGMEM = R"rawliteral(
+<body style="margin:0; background:#222; color:white; font-family:sans-serif">
+  <div style="padding:10px">Value: <span id="v">0</span></div>
+  <canvas id="c" width="800" height="300" style="background:#000; border-bottom:1px solid #444"></canvas>
+  
+<script>
+  const cvs = document.getElementById('c');
+  const ctx = cvs.getContext('2d');
+  let x = 0;
+
+  function drawGrid() {
+    ctx.strokeStyle = '#444';
+    ctx.beginPath();
+    for(let i=0; i<=4; i++) {
+      let y = i * 75;
+      ctx.moveTo(0, y); ctx.lineTo(800, y);
+      ctx.fillStyle = '#888'; ctx.fillText(4095 - (i*1024), 5, y-5);
+    }
+    ctx.stroke();
+    ctx.strokeStyle = '#0f0';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+  }
+
+  drawGrid();
+  setInterval(() => {
+    fetch('/d').then(r => r.text()).then(v => {
+      document.getElementById('v').innerText = v;
+      let y = 300 - (v / 4095 * 300);
+      
+      ctx.lineTo(x, y);
+      ctx.stroke();
+      
+      x += 5;
+      if(x > 800) { 
+        x = 0; 
+        ctx.clearRect(0, 0, 800, 300); 
+        drawGrid(); // Redraws lines so they don't disappear!
+        ctx.moveTo(0, y); // Start the new line at the current value
+      }
+    });
+  }, 100);
+</script></body>
+)rawliteral";
+
+void setup() {
+  Serial.begin(115200);
+  WiFi.softAP("ESP32", "");
+  
+  server.on("/", []() { server.send(200, "text/html", page); });
+  server.on("/d", []() { server.send(200, "text/plain", String(analogRead(32))); });
+  
+  server.begin();
+  Serial.println("Server started at 192.168.4.1");
+}
+
+void loop() {
+  server.handleClient();
+}
