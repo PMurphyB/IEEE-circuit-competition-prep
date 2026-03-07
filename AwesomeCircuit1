@@ -1,0 +1,224 @@
+#include <Wire.h> 
+#include <WiFi.h>
+#include <WebServer.h>
+WebServer server(80);
+/*
+#Include <Wire.h> is from the arduino libarary. This handles the reading/writing, start conditions, and the deeper levels of the I^2C connection. 
+This is part of the standard arduino IDE library so would assume we have this in the competition. 
+This is what allows us to avoid generating the actual signals
+*/
+
+const byte MPU = 0x68;  
+/*
+MPU6050 I^2C address. This is the accelerometer chip and it's corresponding address. byte is an 8-bit number (unsigned char)
+
+This is 0x68, but it can be changed to 0x69 with the AD0 pin tied high (no resistor needed).
+*/
+
+int16_t axRaw, ayRaw, azRaw;
+int16_t gxRaw, gyRaw, gzRaw;
+/*
+These are variable declarations for signed 16-bit integers for the raw data gathered from the ESP32. The data is not in terms of real units yet. 
+*/
+
+float ax, ay, az;
+float gx, gy, gz;
+/*
+These are variable declarations for the output of the data as numbers that have been converted into real units. 
+*/
+
+
+
+
+
+const char page[] PROGMEM = R"rawliteral(
+<body style="margin:0; background:#222; color:white; font-family:sans-serif">
+  <div style="padding:10px"> <span id="v"></span></div>
+  <canvas id="c" width="800" height="300" style="background:#000; border-bottom:1px solid #444"></canvas>
+  
+<script>
+  const cvs = document.getElementById('c');
+  const ctx = cvs.getContext('2d');
+  let x = 0;
+
+  function drawGrid() {
+    ctx.strokeStyle = '#444';
+    ctx.beginPath(); // Essential to reset the 'pen' for the grid
+    for(let i=0; i<=4; i++) {
+      let y = i * 75;
+      ctx.moveTo(0, y); ctx.lineTo(800, y);
+      ctx.fillStyle = '#888'; ctx.fillText(4095 - (i*1024), 5, y-5);
+    }
+    ctx.stroke();
+    // Prepare for the data line
+    ctx.strokeStyle = '#0f0';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+  }
+
+  drawGrid(); // Run once at start
+
+// Add these at the top of your script to remember where each line ended
+let lastX = 0, lastY = 150, lastZ = 150, lastP = 150; 
+
+setInterval(() => {
+  fetch('/data').then(r => r.text()).then(allData => {
+    let parts = allData.split(',');
+    
+    // Convert strings to numbers and scale them
+    let yX = 150 - (parseFloat(parts[0]) * 50); 
+    let yY = 150 - (parseFloat(parts[1]) * 50);
+    let yZ = 150 - (parseFloat(parts[2]) * 50);
+    let yP = 300 - (parseFloat(parts[3]) / 13.6);
+
+    // DRAW X (Green)
+    ctx.strokeStyle = '#0f0';
+    ctx.beginPath();
+    ctx.moveTo(x - 5, lastX);
+    ctx.lineTo(x, yX);
+    ctx.stroke();
+    lastX = yX;
+
+    // DRAW Y (Red)
+    ctx.strokeStyle = '#f00';
+    ctx.beginPath();
+    ctx.moveTo(x - 5, lastY);
+    ctx.lineTo(x, yY);
+    ctx.stroke();
+    lastY = yY;
+
+    // DRAW Z (Blue)
+    ctx.strokeStyle = '#00f';
+    ctx.beginPath();
+    ctx.moveTo(x - 5, lastZ);
+    ctx.lineTo(x, yZ);
+    ctx.stroke();
+    lastZ = yZ;
+
+    ctx.strokeStyle = '#ff0'; // Yellow
+    ctx.beginPath();
+    ctx.moveTo(x - 5, lastP);
+    ctx.lineTo(x, yP);
+    ctx.stroke();
+    lastP = yP;
+
+    x += 5;
+
+    if(x > 800) { 
+      x = 0; 
+      ctx.clearRect(0,0,800,300); 
+      drawGrid(); 
+    }
+  });
+}, 50);
+</script></body>
+)rawliteral";
+
+
+
+void setup() {
+  Serial.begin(115200);
+  /*
+  This is for starting up the esp 32 with 115200 baud rate
+  */
+
+  Wire.begin();
+  /*
+  This initialises the ESP32 default hardware. So both the GPIO pins SDA and SCL 22 and 21. 
+  */
+
+  Wire.beginTransmission(MPU);
+  /*
+  This is for waking up the device at 0x68 and this will need to be done for all sensors.
+  */
+  Wire.write(0x6B); 
+  /*
+  0x6B is for the power management module in the MPU6050 This will come from the datasheet.*/    
+  Wire.write(0x00);     
+  /*
+  Write 0 into that sensor to turn it on*/
+  Wire.endTransmission(true);
+  /*
+  This ends that part of the I2C communication with the chip turned on*/
+
+
+
+  /*
+  Now this is the WIFI/Graph Part
+  */
+  Serial.begin(115200);
+  WiFi.softAP("ESP32-Graph", "");
+  
+  server.on("/", []() { server.send(200, "text/html", page); });
+  server.on("/data", []() {
+  String payload = String(ax) + "," + String(ay) + "," + String(az) + "," + String(analogRead(32));
+  server.send(200, "text/plain", payload);
+  });
+  
+  server.begin();
+  Serial.println("Server started at 192.168.4.1");
+}
+
+void loop() {
+  Wire.beginTransmission(MPU);
+  /*
+  Begin transmission again, this will be for the x acceleration
+  */ 
+  Wire.write(0x3B);
+  /*
+  This is the address for where the ACCEL_XOUT_H which stands for high byte. THIS IS WHERE IT STARTS TO READ FROM. 
+  */
+  Wire.endTransmission(false);
+  /*
+  This means we are moving onto a new transmission but don't let it go keep reading it because we need to read from the registers just pointed to this is why it says FALSE.
+  */
+  Wire.requestFrom(MPU, 6, true);
+  /*
+  This asks it to send 6 bytes starting from the register. Since they are sequential this gives all the data that we wanted.
+  */
+
+  axRaw = (Wire.read() << 8) | Wire.read();
+  ayRaw = (Wire.read() << 8) | Wire.read();
+  azRaw = (Wire.read() << 8) | Wire.read();
+  /*
+  Each of the registers have a high and low value, there are 3 axis X,Y,Z but there are 6 registers. This is because each has an 8 bit value, but the actual
+  measurement is taken with 16bits. The <<8 means to shift the first set left so that the other doesn't lay on top of it.*/
+
+
+  Wire.beginTransmission(MPU);
+  /*
+  Begin transmission again because reading a different thing now
+  */
+  Wire.write(0x43);
+  /*
+  This is the start index where the gyro is so that we can read down the list.
+  */
+  Wire.endTransmission(false);
+  /*
+  Don't let go but not asking anything more, just going to read off the values.
+  */
+  Wire.requestFrom(MPU, 6, true);
+  /*
+  Again, there are 3 measurements but 6 registers 8 bit each and each measurement is 16bits.
+  */
+  gxRaw = (Wire.read() << 8) | Wire.read();
+  gyRaw = (Wire.read() << 8) | Wire.read();
+  gzRaw = (Wire.read() << 8) | Wire.read();
+  /*
+  Just like before we have the first register shifted left by 8 bits so that they don't overlap. Then the next low is added at the end.*/
+
+  ax = axRaw / 16384.0;
+  ay = ayRaw / 16384.0;
+  az = azRaw / 16384.0;
+
+  gx = gxRaw / 131.0;
+  gy = gyRaw / 131.0;
+  gz = gzRaw / 131.0;
+  /*
+  These are the conversions from the ranges of the accelerometer to g's and the degree seconds of the gyroscope. 
+  These values can be found under the accelerometer and gyroscope configuration sections of the datasheet.
+  */
+  server.handleClient();
+}
+
+
