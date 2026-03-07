@@ -1,21 +1,40 @@
 #include <WiFi.h>
+/*
+This is a standard libarary that is used for all arduino/ESP32's that have WiFI capability.
+*/
 #include <WebServer.h>
+/*
+HTTP Web server for ESP32. This is not included in the standard arduino libarary, but it is included for 
+almost all of the ESP32 libararies and most likely will be installed when they get the IDE working for the ESP32.
+*/
 
 const char* ap_ssid = "ESP32-ADC";
 const char* ap_pass = "12345678";
+/*
+*/
 
 WebServer server(80);
+/*
+Port 80 is the standard HTTP port
+*/
 
-// MUST be ADC1 when Wi-Fi is on
 const int analogPin = 32;
+/*
+This is the pin that the voltage is read off of the arduino. This can be hooked up to any kind of circuit and work correctly. 
+Make sure that whatever pin we use is ADC1 and not ADC2 because it will react with the wifi. 
+*/
 
-// Graph settings
-const int N = 200;             // points in the graph
+const int N = 200;
+/*
+This is the number of sample points in the graph
+*/
 const int sampleDelayMs = 10;  // 10ms => 2 seconds per plot (N*delay)
 
 int latestRaw = 0;
+/*
+This is the starting value of the arduino for that specific pin. 
+*/
 
-// ---------- SVG plot endpoint ----------
 void handlePlotSvg() {
   // Collect fresh samples (blocking on purpose, simple + reliable)
   static uint16_t s[N];
