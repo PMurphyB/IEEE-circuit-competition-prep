@@ -1,0 +1,400 @@
+#include <Wire.h>
+
+const int SDA_PIN = 21;   
+const int SCL_PIN = 22;   
+
+struct I2CDevice{
+  uint8_t address;
+};
+I2CDevice foundDevices[32]; 
+
+struct I2CDeviceMasterInfo{
+  const char* name;
+  const char* deviceType;
+  const char* measures; 
+  const char* possibleAddresses; 
+  const char* sleepModeNotes; 
+  const char* commonLibararies;
+};
+
+
+
+I2CDeviceMasterInfo sensorInfo(uint8_t address){
+  switch (address){
+    case 0x10:
+      return {
+        "VEML7700 / VEML6075",
+        "Ambient light or UV sensor",
+        "VEML7700: ambient light in lux. VEML6075: UVA, UVB, UV index estimate",
+        "Usually 0x10",
+        "Usually no major sleep issue. Configure integration time and gain before trusting readings",
+        "Adafruit_VEML7700, Adafruit_VEML6075"
+      };
+
+    case 0x18:
+      return {
+        "MCP9808",
+        "Precision temperature sensor",
+        "Temperature only",
+        "0x18 through 0x1F depending on address pins",
+        "Normally ready after power-up. Can use shutdown / low-power mode through configuration register if desired",
+        "Adafruit_MCP9808, SparkFun_MCP9808_Arduino_Library"
+      };
+
+     case 0x23:
+      return {
+        "BH1750",
+        "Ambient light sensor",
+        "Ambient light in lux",
+        "0x23 or 0x5C",
+        "Typically power on with command, then choose continuous or one-time measurement mode. One-time mode returns to power-down after conversion",
+        "BH1750, hp_BH1750"
+      };
+
+    case 0x27:
+      return {
+        "LCD backpack / PCF8574 IO expander",
+        "Display or IO expander",
+        "Usually not an environmental sensor itself; often an LCD interface board",
+        "0x20 through 0x27 often used",
+        "No sleep issue in the usual sense. Initialize the display or IO expander after detecting it",
+        "LiquidCrystal_I2C, hd44780"
+      };
+
+    case 0x29:
+      return {
+        "TSL2591",
+        "Ambient light sensor",
+        "Visible and infrared light, very wide dynamic range lux measurement",
+        "Usually 0x29",
+        "Must enable device and set gain / integration time before normal readings",
+        "Adafruit_TSL2591_Library"
+      };
+
+    case 0x38:
+      return {
+        "AHT10 / AHT20 / AHT21",
+        "Temperature and humidity sensor",
+        "Temperature and relative humidity",
+        "Usually 0x38",
+        "Must initialize / calibrate after startup. Typical libraries handle this. Sensor uses command-based measurement rather than a simple always-on register stream",
+        "Adafruit_AHTX0"
+      };
+
+    case 0x39:
+      return {
+        "TSL2561",
+        "Ambient light sensor",
+        "Broadband and infrared light for lux calculation",
+        "Usually 0x39, sometimes 0x29 or 0x49 depending on package / wiring",
+        "Must power on sensor and configure gain / integration time before use",
+        "Adafruit_TSL2561_U"
+      };
+
+    case 0x40:
+      return {
+        "HTU21D / SI7021 / HDC1080 / HDC2080",
+        "Temperature and humidity sensor",
+        "Temperature and relative humidity",
+        "Usually 0x40",
+        "Usually no special wake sequence. Most of these use command-triggered conversions, so send the proper measure command before reading data",
+        "Adafruit_HTU21DF_Library, Adafruit_Si7021, ClosedCube_HDC1080"
+      };
+
+    case 0x44:
+      return {
+        "SHT31 / SHT30 / SHT35",
+        "Temperature and humidity sensor",
+        "Temperature and relative humidity",
+        "0x44 or 0x45",
+        "No classic sleep issue. Send a measurement command, then read result bytes. Libraries handle CRC and command timing",
+        "Adafruit_SHT31"
+      };
+
+    case 0x45:
+      return {
+        "SHT31 / SHT30 / SHT35",
+        "Temperature and humidity sensor",
+        "Temperature and relative humidity",
+        "0x44 or 0x45",
+        "No classic sleep issue. Alternate address selection from the same SHT3x family",
+        "Adafruit_SHT31"
+      };
+
+    case 0x48:
+      return {
+        "ADS1115 / TMP102 / LM75",
+        "ADC or temperature sensor",
+        "ADS1115: analog voltage measurement. TMP102 / LM75: temperature",
+        "ADS1115 often 0x48 through 0x4B. TMP102 often 0x48 through 0x4B. LM75 family similar",
+        "ADS1115 requires configuration of mux / gain / data rate before conversion. TMP102 and LM75 usually work immediately, optional shutdown mode exists",
+        "Adafruit_ADS1X15, Adafruit_TMP102, DallasTemperature not for this one"
+      };
+
+    case 0x49:
+      return {
+        "TSL2561 / ADS1115 / TMP102 family",
+        "Light sensor, ADC, or temperature sensor",
+        "Depends on device variant and address pin strapping",
+        "Commonly one of 0x48 through 0x4B families",
+        "Probe chip-specific registers if you want to distinguish exact part",
+        "Adafruit_TSL2561_U, Adafruit_ADS1X15, Adafruit_TMP102"
+      };
+    
+    case 0x4A:
+      return {
+        "ADS1115 / TMP102 / LM75 family",
+        "ADC or temperature sensor",
+        "Analog measurement or temperature depending on device",
+        "Commonly one of 0x48 through 0x4B families",
+        "Usually requires chip-specific probing to positively identify",
+        "Adafruit_ADS1X15, Adafruit_TMP102"
+      };
+
+    case 0x4B:
+      return {
+        "ADS1115 / TMP102 / LM75 family",
+        "ADC or temperature sensor",
+        "Analog measurement or temperature depending on device",
+        "Commonly one of 0x48 through 0x4B families",
+        "Usually requires chip-specific probing to positively identify",
+        "Adafruit_ADS1X15, Adafruit_TMP102"
+      };
+
+    case 0x52:
+      return {
+        "ENS160",
+        "Air quality sensor",
+        "eCO2, TVOC, AQI-style air quality metrics",
+        "0x52 or 0x53",
+        "Usually requires startup initialization and warm-up before readings stabilize. Air quality sensors often need compensation inputs such as humidity and temperature for best results",
+        "SparkFun_Indoor_Air_Quality_Sensor, ScioSense_ENS160"
+      };
+
+     case 0x53:
+      return {
+        "ENS160",
+        "Air quality sensor",
+        "eCO2, TVOC, AQI-style air quality metrics",
+        "0x52 or 0x53",
+        "Usually requires startup initialization and warm-up before readings stabilize",
+        "SparkFun_Indoor_Air_Quality_Sensor, ScioSense_ENS160"
+      };
+
+    case 0x58:
+      return {
+        "SGP30",
+        "Air quality sensor",
+        "TVOC and eCO2 estimate",
+        "Usually 0x58",
+        "Requires initialization command and baseline / humidity compensation handling for best results. Not usually a sleep-mode issue, more of an algorithm warm-up issue",
+        "Adafruit_SGP30, SparkFun_SGP30_Arduino_Library"
+      };
+
+    case 0x59:
+      return {
+        "SGP40",
+        "VOC gas sensor",
+        "VOC index with proper compensation",
+        "Usually 0x59",
+        "Requires command-based measurements and usually temperature / humidity compensation from another sensor for best VOC results",
+        "Adafruit_SGP40, Sensirion I2C SGP4x library"
+      };
+    
+    case 0x5A:
+      return {
+        "CCS811",
+        "Air quality sensor",
+        "eCO2 and TVOC",
+        "0x5A or 0x5B",
+        "Must set measurement drive mode in MEAS_MODE register. Sensor often starts in idle and also benefits from warm-up and optional environmental compensation",
+        "Adafruit_CCS811, SparkFun_CCS811_Arduino_Library"
+      };
+
+    case 0x5B:
+      return {
+        "CCS811",
+        "Air quality sensor",
+        "eCO2 and TVOC",
+        "0x5A or 0x5B",
+        "Must set measurement drive mode in MEAS_MODE register. Sensor often starts in idle and needs warm-up",
+        "Adafruit_CCS811, SparkFun_CCS811_Arduino_Library"
+      };
+
+    case 0x5C:
+      return {
+        "BH1750",
+        "Ambient light sensor",
+        "Ambient light in lux",
+        "0x23 or 0x5C",
+        "Typically power on with command, then choose continuous or one-time measurement mode",
+        "BH1750, hp_BH1750"
+      };
+    
+     case 0x60:
+      return {
+        "SI1145 / MPL3115A2",
+        "UV/light sensor or pressure/altitude sensor",
+        "SI1145: visible, IR, UV index estimate. MPL3115A2: pressure, altitude, temperature",
+        "Usually 0x60",
+        "SI1145 requires parameter configuration and channel enable. MPL3115A2 requires choosing pressure or altitude mode before use",
+        "Adafruit_SI1145_Library, Adafruit_MPL3115A2"
+      };
+
+    case 0x61:
+      return {
+        "SCD30 / SCD41 family possibility on some systems",
+        "CO2 / environmental sensor",
+        "CO2, temperature, humidity depending on exact device",
+        "Some Sensirion CO2 sensors use nearby addresses; verify with datasheet or probe routine",
+        "CO2 sensors often need periodic measurement start command and warm-up time before stable data",
+        "SparkFun_SCD30_Arduino_Library, Sensirion I2C libraries"
+      };
+    
+    case 0x68:
+      return{
+        "MPU6050 / DS3231", 
+        "IMU or RTC",
+        "MPU6050 accel + gyro + temperature + external auxillary",
+        "0x68 or 0x69 for tied high",
+        "If MPU6050, wake by clearing sleep bit in PWR_MGMT_1 write 0x00 in 0x6B",
+        "Wire, Adafruit_MPU6050, RTClib",
+      };
+
+    case 0x69:
+      return{
+        "MPU6050 / DS3231", 
+        "IMU or RTC",
+        "MPU6050 accel + gyro + temperature + external auxillary",
+        "0x68 or 0x69 for tied high",
+        "If MPU6050, wake by clearing sleep bit in PWR_MGMT_1 write 0x00 in 0x6B",
+        "Wire, Adafruit_MPU6050, RTClib",
+      };
+
+    case 0x76:
+      return{
+        "BME280 / BMP280 / BME680",
+        "Environmental sensor",
+        "Temperature, pressure, humidity if BME280, gas if BME680",
+        "0x76 or 0x77",
+        "Must enter measurement mode 0xF4 bit:  7 6 5 | 4 3 2 | 1 0"
+        "osrs_t | osrs_p | mode so must enter binary to config. Registers start at 0xF7", 
+        "Adafruit_BME280, SparkFunBME280"
+      };
+
+    case 0x77:
+      return {
+        "BME280 / BMP280 / BME680 / BMP180 / DPS310",
+        "Environmental sensor",
+        "Pressure and temperature, humidity if BME280, gas if BME680",
+        "0x76 or 0x77 depending on device and address pin",
+        "Commonly requires configuration of measurement mode or control registers before continuous readings. Read chip ID register to distinguish exact device family",
+        "Adafruit_BME280, SparkFunBME280, Adafruit_BME680, Adafruit_BMP085_Unified, Adafruit_DPS310"
+      };
+
+    default:
+      return {
+        "Unknown device",
+        "Unknown",
+        "Unknown",
+        "Unknown",
+        "No common startup or sleep notes stored for this address yet",
+        "Wire"
+      };
+  }
+}
+
+void printDeviceInfo(uint8_t address){
+  I2CDeviceMasterInfo info = sensorInfo(address);
+  Serial.println(address, HEX);
+
+  Serial.print("Name: ");
+  Serial.println(info.name);
+
+  Serial.print("Device Type: ");
+  Serial.println(info.deviceType); 
+
+  Serial.print("Variables the device measures: ");
+  Serial.println(info.measures);
+
+  Serial.print("Possible addresses for this device: ");
+  Serial.println(info.possibleAddresses); 
+
+  Serial.print("Sleep mode notes: ");
+  Serial.println(info.sleepModeNotes); 
+
+  Serial.print("commonLibararies: "); 
+  Serial.println(info.commonLibararies);
+
+};
+
+
+uint8_t foundAddresses[128]; 
+int foundCount = 0;
+
+void scanI2C() {
+  foundCount = 0;
+
+  Serial.println("Scanning I2C bus...");
+  
+  for (uint8_t address = 0x08; address <= 0x77; address++) {
+    Wire.beginTransmission(address);
+    uint8_t error = Wire.endTransmission();
+
+    if (error == 0) {
+      foundAddresses[foundCount] = address;
+      foundDevices[foundCount].address = address;
+
+      printDeviceInfo(address); 
+      foundCount++;
+
+      Serial.print("Device found at address 0x");
+      if (address < 16) Serial.print("0");
+      Serial.println(address, HEX);
+    }
+    else if (error == 4) {
+      Serial.print("Unknown error at address 0x");
+      if (address < 16) Serial.print("0");
+      Serial.println(address, HEX);
+    }
+  }
+
+  Serial.println();
+  Serial.print("Total devices found: ");
+  Serial.println(foundCount);
+
+  if (foundCount > 0) {
+    Serial.println("Stored addresses in bin:");
+    for (int i = 0; i < foundCount; i++) {
+      Serial.print("bin[");
+      Serial.print(i);
+      Serial.print("] = 0x");
+      if (foundAddresses[i] < 16) Serial.print("0");
+      Serial.println(foundAddresses[i], HEX);
+    }
+  } else {
+    Serial.println("No I2C devices found.");
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  Wire.begin(SDA_PIN, SCL_PIN);
+
+  Serial.println("ESP32 I2C Scanner");
+  Serial.print("Using SDA = ");
+  Serial.println(SDA_PIN);
+  Serial.print("Using SCL = ");
+  Serial.println(SCL_PIN);
+  Serial.println();
+
+  scanI2C();
+}
+
+void loop() {
+  scanI2C();
+  Serial.println("------------------");
+  delay(3000);
+}
