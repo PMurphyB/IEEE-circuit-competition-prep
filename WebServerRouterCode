@@ -1,0 +1,457 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <WebSocketsServer.h>
+#include <Wire.h>
+
+const char* ssid = "ASUS_B8";
+const char* password = "";
+
+WebServer server(80);
+WebSocketsServer webSocket(81);
+
+const byte MPU = 0x68;
+
+bool ledState = false;
+
+int16_t axRaw, ayRaw, azRaw;
+int16_t gxRaw, gyRaw, gzRaw;
+
+float ax, ay, az;
+float gx, gy, gz;
+
+// ===== Timing for sending data =====
+unsigned long lastSend = 0;
+const unsigned long sendIntervalMs = 10;  // 100 Hz send rate
+
+// ===== Web page =====
+const char page[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>ESP32 Sensor Dashboard</title>
+  <style>
+    body {
+      margin: 0;
+      background: #1e1e1e;
+      color: white;
+      font-family: Arial, sans-serif;
+      text-align: center;
+    }
+
+    .wrap {
+      padding: 16px;
+    }
+
+    h1 {
+      margin-top: 0;
+      margin-bottom: 12px;
+      font-size: 28px;
+    }
+
+    .buttons {
+      margin-bottom: 14px;
+    }
+
+    button {
+      font-size: 16px;
+      padding: 10px 18px;
+      margin: 6px;
+      cursor: pointer;
+      border: none;
+      border-radius: 8px;
+    }
+
+    #status, #message, #values {
+      margin: 10px 0;
+      font-size: 18px;
+    }
+
+    .legend {
+      display: flex;
+      justify-content: center;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin: 12px 0;
+      font-size: 15px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .color-box {
+      width: 14px;
+      height: 14px;
+      border-radius: 3px;
+      display: inline-block;
+    }
+
+    canvas {
+      background: #000;
+      border: 1px solid #444;
+      max-width: 1000px;
+      width: 95%;
+      height: auto;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>ESP32 Live Sensor Dashboard</h1>
+
+    <div class="buttons">
+      <button onclick="sendToggle()">Toggle LED</button>
+      <button onclick="sendPing()">Ping ESP32</button>
+      <button onclick="clearGraph()">Clear Graph</button>
+      <button onclick="toggleGraph()">Show/Hide Graph</button>
+    </div>
+
+  <div id="status">Socket: Connecting...</div>
+  <div id="message">Waiting for messages...</div>
+  <div id="values">Waiting for sensor data...</div>
+
+    <div class="legend">
+      <div class="legend-item"><span class="color-box" style="background:#00ff00;"></span>Accel X</div>
+      <div class="legend-item"><span class="color-box" style="background:#ff0000;"></span>Accel Y</div>
+      <div class="legend-item"><span class="color-box" style="background:#00aaff;"></span>Accel Z</div>
+      <div class="legend-item"><span class="color-box" style="background:#ffff00;"></span>Light Sensor</div>
+    </div>
+
+  <div id="graphPanel">
+    <canvas id="graph" width="1000" height="400"></canvas>
+  </div>
+    </div>
+
+<script>
+  let gateway = `ws://${window.location.hostname}:81/`;
+  let websocket;
+
+  const canvas = document.getElementById("graph");
+  const ctx = canvas.getContext("2d");
+
+  const W = canvas.width;
+  const H = canvas.height;
+
+  let x = 0;
+  const stepX = 10;
+
+  // last Y positions for each trace
+  let lastAX = H / 2;
+  let lastAY = H / 2;
+  let lastAZ = H / 2;
+  let lastLight = H / 2;
+
+  // latest received values
+  let latestAX = 0;
+  let latestAY = 0;
+  let latestAZ = 0;
+  let latestLight = 0;
+  let hasFreshData = false;
+
+  function drawGrid() {
+    ctx.clearRect(0, 0, W, H);
+
+    // horizontal grid lines
+    ctx.strokeStyle = "#333";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = 0; i <= 8; i++) {
+      let y = i * (H / 8);
+      ctx.moveTo(0, y);
+      ctx.lineTo(W, y);
+    }
+
+    // vertical grid lines
+    for (let i = 0; i <= 10; i++) {
+      let gx = i * (W / 10);
+      ctx.moveTo(gx, 0);
+      ctx.lineTo(gx, H);
+    }
+    ctx.stroke();
+
+    // center line for accel
+    ctx.strokeStyle = "#666";
+    ctx.beginPath();
+    ctx.moveTo(0, H / 2);
+    ctx.lineTo(W, H / 2);
+    ctx.stroke();
+
+    ctx.fillStyle = "#aaa";
+    ctx.font = "14px Arial";
+    ctx.fillText("+Accel", 8, 16);
+    ctx.fillText("0g", 8, H / 2 - 6);
+    ctx.fillText("-Accel", 8, H - 8);
+  }
+
+  function clearGraph() {
+    x = 0;
+    lastAX = H / 2;
+    lastAY = H / 2;
+    lastAZ = H / 2;
+    lastLight = H / 2;
+    drawGrid();
+  }
+
+  function toggleGraph(){
+    const panel = document.getElementById("graphPanel");
+    if (panel.style.display === "none"){
+      panel.style.display = "block";
+    }
+    else{
+      panel.style.display = "none";
+    }
+  }
+
+  function clamp(v, lo, hi) {
+    return Math.max(lo, Math.min(hi, v));
+  }
+
+  function accelToY(v) {
+    return clamp(H / 2 - v * 80, 0, H);
+  }
+
+  function lightToY(v) {
+    return clamp(H - (v / 4095.0) * H, 0, H);
+  }
+
+  function drawTrace(prevY, newY, color) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x === 0 ? 0 : x - stepX, prevY);
+    ctx.lineTo(x, newY);
+    ctx.stroke();
+  }
+
+  function initWebSocket() {
+    websocket = new WebSocket(gateway);
+
+    websocket.onopen = function() {
+      document.getElementById("status").innerHTML = "Socket: Connected";
+      console.log("WebSocket connected");
+    };
+
+    websocket.onclose = function(event) {
+      document.getElementById("status").innerHTML =
+        "Socket: Disconnected - retrying...";
+      console.log("WebSocket closed:", event.code);
+      setTimeout(initWebSocket, 2000);
+    };
+
+    websocket.onerror = function(err) {
+      console.log("WebSocket error:", err);
+    };
+
+    websocket.onmessage = function(event) {
+      let msg = event.data;
+
+      if (msg.startsWith("DATA:")) {
+        let payload = msg.substring(5);
+        let parts = payload.split(",");
+
+        if (parts.length === 4) {
+          latestAX = parseFloat(parts[0]);
+          latestAY = parseFloat(parts[1]);
+          latestAZ = parseFloat(parts[2]);
+          latestLight = parseInt(parts[3]);
+          hasFreshData = true;
+        }
+      } else {
+        document.getElementById("message").innerHTML = msg;
+      }
+    };
+  }
+
+  function sendToggle() {
+    if (websocket && websocket.readyState === WebSocket.OPEN) {
+      websocket.send("toggle");
+    }
+  }
+
+  function sendPing() {
+    if (websocket && websocket.readyState === WebSocket.OPEN) {
+      websocket.send("ping");
+    }
+  }
+
+  // Fixed render loop: draws at steady intervals using only latest values
+  setInterval(() => {
+    if (!hasFreshData) return;
+
+    document.getElementById("values").innerHTML =
+      `ax: ${latestAX.toFixed(3)} g &nbsp;&nbsp; ` +
+      `ay: ${latestAY.toFixed(3)} g &nbsp;&nbsp; ` +
+      `az: ${latestAZ.toFixed(3)} g &nbsp;&nbsp; ` +
+      `Light: ${latestLight}`;
+
+    let yAX = accelToY(latestAX);
+    let yAY = accelToY(latestAY);
+    let yAZ = accelToY(latestAZ);
+    let yLight = lightToY(latestLight);
+
+    drawTrace(lastAX, yAX, "#00ff00");
+    drawTrace(lastAY, yAY, "#ff0000");
+    drawTrace(lastAZ, yAZ, "#00aaff");
+    drawTrace(lastLight, yLight, "#ffff00");
+
+    lastAX = yAX;
+    lastAY = yAY;
+    lastAZ = yAZ;
+    lastLight = yLight;
+
+    x += stepX;
+
+    if (x >= W) {
+      clearGraph();
+    }
+
+    hasFreshData = false;
+  }, 100); // 10 Hz render rate
+
+  drawGrid();
+  window.onload = initWebSocket;
+</script>
+</body>
+</html>
+)rawliteral";
+
+// ===== WebSocket event handler =====
+void webSocketEvent(uint8_t clientNum, WStype_t type, uint8_t * payload, size_t length) {
+  switch (type) {
+    case WStype_DISCONNECTED:
+      Serial.printf("Client %u disconnected\n", clientNum);
+      break;
+
+    case WStype_CONNECTED: {
+      IPAddress ip = webSocket.remoteIP(clientNum);
+      Serial.printf("Client %u connected from %d.%d.%d.%d\n",
+                    clientNum, ip[0], ip[1], ip[2], ip[3]);
+      webSocket.sendTXT(clientNum, "Hello from ESP32");
+      break;
+    }
+
+    case WStype_TEXT: {
+      String msg = String((char*)payload);
+      Serial.printf("Received from client %u: %s\n", clientNum, msg.c_str());
+
+      if (msg == "toggle") {
+        ledState = !ledState;
+        digitalWrite(2, ledState);
+        webSocket.sendTXT(clientNum, ledState ? "LED is ON" : "LED is OFF");
+      }
+      else if (msg == "ping") {
+        webSocket.sendTXT(clientNum, "Ping received from browser");
+      }
+      else {
+        webSocket.sendTXT(clientNum, "Unknown command: " + msg);
+      }
+      break;
+    }
+
+    default:
+      break;
+  }
+}
+
+// ===== Serve webpage =====
+void handleRoot() {
+  server.send_P(200, "text/html", page);
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  pinMode(2, OUTPUT);
+  digitalWrite(2, LOW);
+
+  // I2C for MPU6050
+  Wire.begin();
+
+  // Wake up MPU6050
+  Wire.beginTransmission(MPU);
+  Wire.write(0x6B);
+  Wire.write(0x00);
+  Wire.endTransmission(true);
+
+  // Analog input for light sensor
+  pinMode(32, INPUT);
+
+  // Connect to existing Wi-Fi
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to Wi-Fi");
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  WiFi.setSleep(false);
+
+  Serial.println();
+  Serial.print("Connected. ESP32 IP address: ");
+  Serial.println(WiFi.localIP());
+
+  // Start HTTP server
+  server.on("/", handleRoot);
+  server.begin();
+
+  // Start WebSocket server
+  webSocket.begin();
+  webSocket.onEvent(webSocketEvent);
+
+  Serial.println("HTTP server started");
+  Serial.println("WebSocket server started");
+}
+
+void loop() {
+  server.handleClient();
+  webSocket.loop();
+
+  if (millis() - lastSend >= sendIntervalMs) {
+    lastSend = millis();
+
+    // Read accelerometer
+    Wire.beginTransmission(MPU);
+    Wire.write(0x3B);
+    Wire.endTransmission(false);
+    Wire.requestFrom(MPU, 6, true);
+
+    if (Wire.available() >= 6) {
+      axRaw = (Wire.read() << 8) | Wire.read();
+      ayRaw = (Wire.read() << 8) | Wire.read();
+      azRaw = (Wire.read() << 8) | Wire.read();
+    }
+
+    // Read gyroscope
+    Wire.beginTransmission(MPU);
+    Wire.write(0x43);
+    Wire.endTransmission(false);
+    Wire.requestFrom(MPU, 6, true);
+
+    if (Wire.available() >= 6) {
+      gxRaw = (Wire.read() << 8) | Wire.read();
+      gyRaw = (Wire.read() << 8) | Wire.read();
+      gzRaw = (Wire.read() << 8) | Wire.read();
+    }
+
+    ax = axRaw / 16384.0;
+    ay = ayRaw / 16384.0;
+    az = azRaw / 16384.0;
+
+    gx = gxRaw / 131.0;
+    gy = gyRaw / 131.0;
+    gz = gzRaw / 131.0;
+
+    int lightValue = analogRead(32);
+
+    char payload[64];
+    snprintf(payload, sizeof(payload), "DATA:%.3f,%.3f,%.3f,%d",
+             ax, ay, az, lightValue);
+
+    webSocket.broadcastTXT(payload);
+  }
+}
